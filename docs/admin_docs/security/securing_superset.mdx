@@ -130,6 +130,49 @@ Here's the documentation section how how to set up Talisman: https://superset.ap
 
 - **Web Application Firewall (WAF):** Deploying Superset behind a WAF (e.g., Cloudflare, AWS WAF) is strongly recommended. A WAF with a standard ruleset (like the OWASP Core Rule Set) provides a critical layer of defense against common attacks like SQL Injection, XSS, and remote code execution.
 
+- **Optional application-level IP policy (third-party, opt-in):** Flask-Limiter (see `RATELIMIT_ENABLED` in [Configuring Superset](../configuration/configuring-superset.mdx)) throttles requests but has no IP allow or block lists, no bans and no request screening. If you cannot place a WAF or reverse-proxy policy in front of Superset, the third-party [flaskapi-guard](https://github.com/Guard-Core/flaskapi-guard) extension (MIT) can add those in-process through the existing `FLASK_APP_MUTATOR` hook, with no change to Superset itself. Install it in the same environment as Superset (`pip install flaskapi-guard`), then add to `superset_config.py`:
+
+  ```python
+  # superset_config.py
+  from flaskapi_guard import FlaskAPIGuard, SecurityConfig
+
+
+  def FLASK_APP_MUTATOR(app):
+      FlaskAPIGuard(
+          app,
+          config=SecurityConfig(
+              # Only honour X-Forwarded-For from your own proxy or load balancer.
+              # Leave ENABLE_PROXY_FIX off when you set this (see the notes below).
+              trusted_proxies=["10.0.0.0/8"],
+              # Per-process state. Set enable_redis=True and redis_url="redis://..."
+              # for bans shared across workers. The library default is enable_redis=True.
+              enable_redis=False,
+              # Superset sets security headers (Talisman) and CORS itself.
+              security_headers={"enabled": False},
+              enable_cors=False,
+              # Screen the URL, query string and headers, never request bodies,
+              # because SQL Lab and chart queries legitimately carry SQL.
+              detection_scan_body=False,
+              # Superset's list endpoints carry free-text searches in the rison "q"
+              # parameter, and explore URLs carry SQL in "form_data".
+              excluded_detection_params={"q", "form_data"},
+              exclude_paths=["/static", "/health", "/healthcheck", "/ping"],
+              # Flask-Limiter already rate limits. Leave this off to avoid two limiters.
+              enable_rate_limiting=False,
+              blacklist=["203.0.113.0/24"],  # optional static IP block list
+              auto_ban_threshold=10,  # attack-pattern requests before a temporary ban
+              auto_ban_duration=3600,  # seconds
+          ),
+      )
+  ```
+
+  Notes:
+
+  - `FLASK_APP_MUTATOR` runs after Superset's middlewares are set up, so it sees whatever `ENABLE_PROXY_FIX` produced. Use one mechanism for the client address, not both. `ProxyFix` trusts `X-Forwarded-For` from any peer, so a client that can reach Superset directly can spoof its address. `trusted_proxies` only honours the header from the listed peers.
+  - Loopback addresses are never banned, so a misconfigured proxy cannot lock out the whole deployment.
+  - Set `passive_mode=True` first to log what would be blocked without blocking anything.
+  - Blocked requests get a `400` (attack pattern) or `403` (blocked or banned IP) response from the guard before Superset handles them.
+
 ### **Monitoring and Logging**
 
 - **Configure Structured Logging:** Set up a robust logging configuration to capture important security events.
