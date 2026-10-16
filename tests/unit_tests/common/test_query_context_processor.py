@@ -3809,6 +3809,7 @@ def test_semantic_annotation_null_protocol_versions_parent_cache(
         datasource="native-1", annotation_context=context
     )
     assert current_key != legacy_key
+    assert context is not None
     assert context["source_scope"][0]["semantic_filter_protocol"] == (
         "semantic-null-filters-v1"
     )
